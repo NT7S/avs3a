@@ -32,6 +32,8 @@
 #include <termios.h>				// POSIX terminal control definitions
 #include <sys/ioctl.h>
 
+#define	VER		1
+#define	REV		3
 
 typedef unsigned char		uint8_t;
 typedef unsigned short		uint16_t;
@@ -45,11 +47,12 @@ extern	int	spi_mode(int mode);
 extern	int	get_config(void);
 extern	int	read_init(void);
 extern	int	read_done(void);
-extern	int	ss_program(uint32_t bitStreamLen, uint8_t *bitstream);
+extern	int	ss_program(uint32_t bitStreamLen);
 extern	int	jtag_mux(int level);
 extern	int	fpga_rst(int level);
 extern	int	get_ver(void);
 extern	void	display_usage(void);
+extern	int	ss_xfer(uint32_t bitStreamLen, uint8_t *bitstream);
 
 extern	int	ser_open(char *ser_port);
 extern	int	ser_write(int fd, char *tx_buffer, int debug);
