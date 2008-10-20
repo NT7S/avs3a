@@ -27,7 +27,7 @@
 #define	MAX_TX			32
 #define	DEBUG			1
 
-enum	{ACK=0, BOOL, STR};
+enum	{ACK=0, BOOL, INT, STR};
 enum	{UART=0, SPI, JTAG, NONE};
 
 typedef struct CMD_S
@@ -53,7 +53,7 @@ cmd_t cmd_tbl[] =
     {"sf_transfer",	0, 1, 0, ACK},
     {"ss_program",	1, 1, 0, ACK},
     {"jtag_mux",	0, 1, 0, ACK},
-    {"get_config",	0, 1, 0, BOOL},
+    {"get_config",	0, 1, 0, INT},
     {"usb_bridge",	0, 1, 0, ACK},
     {"fpga_rst",	1, 1, 0, ACK},
     {"get_ver",		0, 1, 0, STR}
@@ -113,6 +113,7 @@ char	sourceFile[256];
 char	devType[32];
 char	buildDate[32];
 char	buildTime[32];
+char	psocVersion[32];
 int	verbose;
 
 int main(int argc, char *argv[])
@@ -132,6 +133,9 @@ int main(int argc, char *argv[])
     opterr = 0;
     options.cmd = 0;
     verbose = 0;
+
+
+    printf("\navs3a %d.%d\n", VER, REV);
     
     while ((opt = getopt_long(argc, argv, option_string, long_options, &long_index)) != EOF)
     {
@@ -281,11 +285,16 @@ int main(int argc, char *argv[])
 
     if (verbose)
     {
+	verbose = 0;
+	get_ver();
+
 	printf("\n");
-	printf("Source File: %s\n", sourceFile);
-	printf("Build Date : %s %s\n", buildDate, buildTime);
-	printf("Device Type: %s\n", devType);
+	printf("Source File : %s\n", sourceFile);
+	printf("Build Date  : %s %s\n", buildDate, buildTime);
+	printf("Device Type : %s\n", devType);
+	printf("PSoC Version: %s\n", psocVersion);
 	printf("\n");
+	verbose = 1;
     }
     
     if (strcmp(devType, "3s400aft256") != 0)
@@ -317,40 +326,33 @@ int main(int argc, char *argv[])
  */
 int slave_serial(uint32_t bitStreamLen, uint8_t *bitStream)
 {
+    int
+	rc;
     uint8_t
 	init_status;
 
-    get_ver();
     init_status = 0;
-    load_config(SPI);
-    drive_prog(LOW);
-    drive_mode(SLAVE_SERIAL);
-    spi_mode(HIGH);
-    drive_prog(HIGH);
-    do
-    {
-	init_status = read_init();
-    }
-    while(init_status != INIT_HIGH);
-
-    drive_mode(TRI_STATE);
-    fpga_rst(LOW);
-    do
-    {
-	init_status = get_config();
-    }
-    while(init_status != 0x31);
+    rc = EXIT_SUCCESS;
     
-    ss_program(bitStreamLen, bitStream);
+    load_config(SPI);				//  1. Load SPI configuration
+    drive_prog(LOW);				//  2. Drive PROG low
+    drive_mode(SLAVE_SERIAL);			//  3. Drive M[2:0] to 1:1:1
+    spi_mode(HIGH);				//  4. Drive PSOC_SPI_MODE high
+    drive_prog(HIGH);				//  5. Drive PROG high
+    while (read_init() != HIGH) usleep(100);	//  6. Wait for INIT to go high
+    drive_mode(TRI_STATE);			//  7. Drive M[2:0] to tri-state
+    fpga_rst(HIGH);				//  8. Assert FPGA reset
+    while (get_config() != 1) usleep(100);	//     Wait for config to respond correctly
+    ss_program(bitStreamLen);			//  9. Send bit stream size 
+    ss_xfer(bitStreamLen, bitStream);		// 10. Send bit stream 
 
-    spi_mode(LOW);
-
-    if (read_init() != INIT_HIGH) return(EXIT_FAILURE);
-    if (read_done() != INIT_HIGH) return(EXIT_FAILURE);
-    load_config(UART);
-    fpga_rst(HIGH);
+    if (read_init() != HIGH) rc = EXIT_FAILURE;	// 11. Check INIT still high
+    if (read_done() != HIGH) rc = EXIT_FAILURE;	// 12. Check DONE is high
+    spi_mode(LOW);				// 13. Drive PSOC_SPI_MODE low
+    load_config(UART);				// 14. Load UART configuration
+    fpga_rst(LOW);				// 15. Deassert FPGA reset
     
-    return(EXIT_SUCCESS);
+    return(rc);
 }
 
 
@@ -385,7 +387,7 @@ void *avs3aXfer(int cmd, int param, int trace)
 	rc = ser_read(ser_fd, response, cmd_tbl[cmd].expAckCnt, trace);
 	if (rc == 0)
 	{
-	    usleep(250);
+	    //    usleep(250);
 	    maxPass--;
 	}
     } while ((rc == 0) && (maxPass > 0));
@@ -404,6 +406,10 @@ void *avs3aXfer(int cmd, int param, int trace)
 	break;
     case BOOL:
 	i = response[cmd_tbl[cmd].offset];
+	p = (void *)i;
+	break;
+    case INT:
+	i = response[cmd_tbl[cmd].offset] - '0';
 	p = (void *)i;
 	break;
     case STR:
@@ -491,18 +497,22 @@ int read_done(void)
 /*
  * Download the bit stream FPGA configuration file
  */
-int ss_program(uint32_t bitStreamLen, uint8_t *bitStream)
+int ss_program(uint32_t bitStreamLen)
+{
+    avs3aXfer(SS_PROGRAM, bitStreamLen, verbose);
+
+    return(0);
+}
+
+int ss_xfer(uint32_t bitStreamLen, uint8_t *bitStream)
 {
     char
-	command[100], response[100];
+	response[32];
     int
 	pktSize, i, txByteCnt, pkts, rc, expNumAcks, trace;
     uint8_t
 	*bsp;
     
-
-    avs3aXfer(SS_PROGRAM, bitStreamLen, verbose);
-
     ser_option_set_rawout(ser_fd);
     printf("\n");
 
@@ -521,25 +531,13 @@ int ss_program(uint32_t bitStreamLen, uint8_t *bitStream)
 	else
 	    pktSize = bitStreamLen - txByteCnt;
 
-	if (pktSize > 16)
-	    expNumAcks = 2;
-	else
-	    expNumAcks = 1;
-
-	expNumAcks = 1;
 	txByteCnt += ser_raw_write(ser_fd, bsp, pktSize, trace);
        	bsp += pktSize;
-	rc = ser_read(ser_fd, response, expNumAcks, trace);
 
-	if (rc != 1)
-	{
-	    printf("\nError: invalid ack sequence\n");
-	    exit(1);
-	}
 	if (trace == 0) printf("Bytes written: %d\r", txByteCnt);
 	fflush(stdout);
     }
-    while(txByteCnt+1 < bitStreamLen);
+    while(txByteCnt < bitStreamLen);
     printf("\n\n");
     
     ser_option_set_lineout(ser_fd);
@@ -547,7 +545,8 @@ int ss_program(uint32_t bitStreamLen, uint8_t *bitStream)
     /*
      * Get one last ACK
      */
-    rc = ser_read(ser_fd, response, 1, 0);
+    if (trace) printf("One Last ACK        ");
+    rc = ser_read(ser_fd, response, 1, trace);
     if (rc != 1) printf("Error\n");
     
     return(0);
@@ -599,8 +598,8 @@ int get_ver(void)
 	*version;
 
     version = avs3aXfer(GET_VER, 0, verbose);
-    
-    if (verbose == 0) printf("\nPSoC Version %s\n", version);
+
+    strcpy(psocVersion, version);
     return(0);
 }
 

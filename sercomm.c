@@ -40,6 +40,7 @@ int ser_open(char *ser_port)
     {
 	fcntl(fd, F_SETFL, 0);
 	ser_option_set_lineout(fd);
+	tcflush(fd, TCIFLUSH);
     }
     do
     {
@@ -54,8 +55,6 @@ int ser_write(int fd, char *tx_buffer, int debug)
     int
 	tx_len, bytes_sent;
 
-    ioctl(fd, TCFLSH, 2);
-    
     if (debug > 0) printf("%-20s", tx_buffer);
 
     tx_len = strlen(tx_buffer);
@@ -65,22 +64,23 @@ int ser_write(int fd, char *tx_buffer, int debug)
 	fputs("serial port write failed - ", stderr);
 	fprintf(stderr, "%s", strerror(errno));
     }
-
+    usleep(1000);
+    
     return(bytes_sent);
 }
 
 int ser_raw_write(int fd, const uint8_t *tx_buffer, int msg_len, int debug)
 {
     int
-	i, bytes_sent, rc, tx_cnt;
+	i, bytes_sent, bytesRcvd, n, rc, tx_cnt;
     char
 	*er;
-
-//    ioctl(fd, TCFLSH, 2);
+    uint8_t
+	rxBuf[16];
 
     if (debug > 0)
     {
-	for (i = 0; i < msg_len; i++)
+	for (i = 0; i < 32; i++)
 	{
 	    if ((i % 16) == 0)
 	    {
@@ -89,7 +89,11 @@ int ser_raw_write(int fd, const uint8_t *tx_buffer, int msg_len, int debug)
 		else
 		    printf("       :");
 	    }
-	    printf("%3.2X", tx_buffer[i]);
+	    if (i < msg_len)
+		printf("%3.2X", tx_buffer[i]);
+	    else
+		printf("   ");
+		
 	    if (i == 15) printf("\n");
 	}
     }
@@ -103,6 +107,19 @@ int ser_raw_write(int fd, const uint8_t *tx_buffer, int msg_len, int debug)
 	exit(1);
     }
 
+    bytesRcvd = 0;
+    do
+    {
+	n = read(fd, rxBuf, 4);
+	bytesRcvd += n;
+    } while (bytesRcvd < 4);
+
+    if (debug)
+    {
+	printf(" | ");
+	for (i = 0; i < 4;i++) printf("%3.2X", rxBuf[i]);
+	printf("\n");
+    }
     return(rc);
 }
 	
@@ -114,7 +131,7 @@ int ser_read(int fd, char *rx_buffer, int expAckCnt, int debug)
     uint8_t
 	temp_buffer[100], *p, db;
 
-    done = 0;
+    done = 5;
     bytes_rcvd = 0;
     total_bytes_rcvd = 0;
 
@@ -142,10 +159,10 @@ int ser_read(int fd, char *rx_buffer, int expAckCnt, int debug)
 	}
 	else
 	{
-	    usleep(100);
-	    //    done = 1;
+	    usleep(500);
+	    done--;
 	}
-    } while ((done == 0) && (numAcks < expAckCnt));
+    } while ((done > 0) && (numAcks < expAckCnt));
 
 
     if (debug > 0)
@@ -231,7 +248,6 @@ void ser_option_set_lineout(int fd)
     /*
      * Set the new options for the port
      */
-    tcflush(fd, TCIFLUSH);
     tcsetattr(fd, TCSANOW, &ser_options);
 }
 
@@ -285,6 +301,5 @@ void ser_option_set_rawout(int fd)
     /*
      * Set the new options for the port
      */
-    tcflush(fd, TCIFLUSH);
     tcsetattr(fd, TCSANOW, &ser_options);
 }
