@@ -1,0 +1,1 @@
+The Avnet Spartan-3A Evaluation Kit is a low-cost way of experimenting with FPGA technology. This project is a Linux command line program designed to replicate the important functions of the included AvProg programming utility for Windows.
